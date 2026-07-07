@@ -70,7 +70,8 @@
     }
 
     .metric,
-    .tap-hint {
+    .tap-hint,
+    .sound-button {
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--panel);
@@ -105,6 +106,19 @@
       font-weight: 850;
       line-height: 1;
       font-variant-numeric: tabular-nums;
+    }
+
+    .sound-button {
+      position: absolute;
+      top: max(78px, calc(env(safe-area-inset-top) + 74px));
+      right: 10px;
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      color: var(--text);
+      font-size: 19px;
+      line-height: 1;
+      cursor: pointer;
     }
 
     .tap-hint {
@@ -161,7 +175,7 @@
       line-height: 1.55;
     }
 
-    button {
+    .start-button {
       width: 100%;
       min-height: 46px;
       border: 0;
@@ -208,20 +222,22 @@
       </div>
     </section>
 
-    <div class="tap-hint">タップで止める</div>
+    <button class="sound-button" id="soundButton" type="button" aria-label="音を切り替え">♪</button>
+    <div class="tap-hint">タップで止める / Space・Enter</div>
     <div class="flash" id="flash"></div>
 
     <section class="overlay visible" id="overlay">
       <div class="dialog">
         <h1 id="overlayTitle">Stack Bars</h1>
-        <p class="message" id="overlayMessage">動く棒を止めて</p>
-        <button id="startButton" type="button">スタート</button>
+        <p class="message" id="overlayMessage">動く棒を止めて、下の棒にぴったり重ねていく。</p>
+        <button class="start-button" id="startButton" type="button">スタート</button>
       </div>
     </section>
   </main>
 
   <script>
     const BEST_KEY = "stack-bars-best";
+    const SOUND_KEY = "stack-bars-sound";
     const canvas = document.getElementById("game");
     const ctx = canvas.getContext("2d");
     const scoreEl = document.getElementById("score");
@@ -231,8 +247,14 @@
     const overlayTitle = document.getElementById("overlayTitle");
     const overlayMessage = document.getElementById("overlayMessage");
     const startButton = document.getElementById("startButton");
+    const soundButton = document.getElementById("soundButton");
     const flash = document.getElementById("flash");
     const colors = ["#f0c85a", "#67d8a8", "#69aef7", "#ef7b9d", "#d6a3ff", "#ff9f68"];
+
+    const audio = {
+      ctx: null,
+      muted: localStorage.getItem(SOUND_KEY) === "off"
+    };
 
     const game = {
       running: false,
@@ -252,6 +274,7 @@
     };
 
     updateHud();
+    updateSoundButton();
 
     function resize() {
       const rect = canvas.getBoundingClientRect();
@@ -262,6 +285,61 @@
       canvas.height = Math.round(game.h * game.dpr);
       ctx.setTransform(game.dpr, 0, 0, game.dpr, 0, 0);
       if (!game.running && !game.started) resetPreview();
+    }
+
+    function ensureAudio() {
+      if (audio.muted) return null;
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) return null;
+      if (!audio.ctx) audio.ctx = new AudioContext();
+      if (audio.ctx.state === "suspended") audio.ctx.resume();
+      return audio.ctx;
+    }
+
+    function playTone(freq, duration, type, gain, delay = 0) {
+      const soundCtx = ensureAudio();
+      if (!soundCtx) return;
+      const start = soundCtx.currentTime + delay;
+      const osc = soundCtx.createOscillator();
+      const amp = soundCtx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, start);
+      amp.gain.setValueAtTime(0.0001, start);
+      amp.gain.exponentialRampToValueAtTime(gain, start + 0.012);
+      amp.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+      osc.connect(amp);
+      amp.connect(soundCtx.destination);
+      osc.start(start);
+      osc.stop(start + duration + 0.02);
+    }
+
+    function playSound(name) {
+      if (name === "start") {
+        playTone(330, 0.08, "sine", 0.08);
+        playTone(495, 0.11, "sine", 0.07, 0.07);
+      } else if (name === "place") {
+        playTone(440 + Math.min(game.score, 30) * 7, 0.07, "triangle", 0.055);
+      } else if (name === "perfect") {
+        playTone(660, 0.08, "sine", 0.07);
+        playTone(990, 0.1, "sine", 0.055, 0.055);
+      } else if (name === "miss") {
+        playTone(160, 0.18, "sawtooth", 0.06);
+        playTone(92, 0.22, "triangle", 0.05, 0.08);
+      }
+    }
+
+    function updateSoundButton() {
+      soundButton.textContent = audio.muted ? "×" : "♪";
+      soundButton.setAttribute("aria-label", audio.muted ? "音をオンにする" : "音をオフにする");
+      localStorage.setItem(SOUND_KEY, audio.muted ? "off" : "on");
+    }
+
+    function toggleSound(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      audio.muted = !audio.muted;
+      updateSoundButton();
+      if (!audio.muted) playSound("start");
     }
 
     function baseBar() {
@@ -292,6 +370,8 @@
     }
 
     function startGame() {
+      ensureAudio();
+      playSound("start");
       game.running = true;
       game.started = true;
       game.score = 0;
@@ -332,6 +412,7 @@
       if (overlap <= 4) {
         endGame();
         pulse("#ff6a78");
+        playSound("miss");
         return;
       }
 
@@ -348,8 +429,10 @@
         placed.width = Math.min(placed.width + 8, Math.min(326, game.w * 0.76));
         placed.x = Math.max(12, Math.min(game.w - placed.width - 12, placed.x - 4));
         game.score += 2;
+        playSound("perfect");
       } else {
         game.score += 1;
+        playSound("place");
       }
 
       game.stack.push(placed);
@@ -481,6 +564,7 @@
     }
 
     startButton.addEventListener("click", handleAction);
+    soundButton.addEventListener("click", toggleSound);
     canvas.addEventListener("pointerdown", handleAction);
     window.addEventListener("keydown", (event) => {
       if (event.code === "Space" || event.code === "Enter") handleAction(event);
